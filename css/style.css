@@ -9,11 +9,12 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
-  font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
+  font-family: Arial, Helvetica, sans-serif;
   background: radial-gradient(ellipse at top, #2c2019, var(--bg) 70%);
   color: var(--paper);
   display: flex; justify-content: center;
 }
+html[lang="zh-CN"] body { font-family: "Noto Serif SC", "Songti SC", serif; }
 #app { position: relative; width: 100%; max-width: 440px; min-height: 100vh; padding: 56px 24px 48px; }
 .language-switch {
   position: absolute; top: 12px; right: 16px; z-index: 2;
@@ -48,7 +49,7 @@ body {
 .hint { color: var(--muted); font-size: 13px; }
 
 /* ---- 书本 ---- */
-.book { position: relative; width: 210px; height: 290px; perspective: 1200px; margin: 24px 0; }
+.book { position: relative; width: 250px; height: 345px; perspective: 1200px; margin: 24px 0; }
 .book .inner {
   position: absolute; inset: 0; background: var(--paper); border-radius: 4px 10px 10px 4px;
   display: flex; align-items: center; justify-content: center; color: var(--ink); font-size: 28px;
@@ -91,9 +92,20 @@ body {
 }
 .fb.selected { background: var(--gold); color: var(--leather); border-color: var(--gold); }
 
+html[lang="en"] .page-no { font-size: 11px; letter-spacing: 1px; }
+html[lang="en"] .recall { font-size: 13px; line-height: 1.65; }
+html[lang="en"] .message { font-size: 19px; line-height: 1.6; }
+html[lang="en"] .action span { font-size: 11px; }
+html[lang="en"] .action p { font-size: 14px; line-height: 1.6; }
+html[lang="en"] .date { font-size: 10px; letter-spacing: 0.5px; }
+
 /* ---- 动画 ---- */
 .fade-in { animation: fadeIn 0.5s ease both; }
 .reveal { animation: reveal 0.9s ease both; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes reveal { from { opacity: 0; transform: scale(0.94) rotateX(8deg); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
 @keyframes breathe { 0%,100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5); } 50% { box-shadow: 0 10px 40px rgba(232,201,138,0.25); } }
+
+@media (max-height: 700px) {
+  .book { width: 220px; height: 304px; }
+}
