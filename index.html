@@ -12,6 +12,36 @@
 </head>
 <body>
   <main id="app"></main>
+  <div class="site-widgets">
+    <aside class="corner-widget visitor-widget" id="visitor-widget">
+      <button class="widget-toggle" id="visitor-toggle" type="button" aria-expanded="false" aria-controls="visitor-panel">
+        <span aria-hidden="true">🌍</span><span data-i18n="visitorLabel">Visitor map</span>
+      </button>
+      <div class="widget-panel visitor-panel" id="visitor-panel" hidden>
+        <div class="widget-panel-heading">
+          <p data-i18n="visitorTitle">Visitors around the world</p>
+          <button class="widget-close" type="button" data-widget-close="visitor" data-i18n-aria-label="close" aria-label="Close">×</button>
+        </div>
+        <div class="visitor-map-content">
+          <script type="text/javascript" id="mapmyvisitors" src="https://mapmyvisitors.com/map.js?d=EP1S8wkLjh8065HQCPL79zFjnoY0rjrhdSJTtDxbT1g&amp;cl=ffffff"></script>
+        </div>
+        <p class="widget-note" data-i18n="visitorNote">Visitor counts are shared with the Unit Converter map.</p>
+      </div>
+    </aside>
+    <aside class="corner-widget support-widget" id="support-widget">
+      <button class="widget-toggle" id="support-toggle" type="button" aria-expanded="false" aria-controls="support-panel">
+        <span aria-hidden="true">☕</span><span data-i18n="supportLabel">Support</span>
+      </button>
+      <div class="widget-panel support-panel" id="support-panel" hidden>
+        <div class="widget-panel-heading">
+          <p data-i18n="supportTitle">Enjoying FateBook?</p>
+          <button class="widget-close" type="button" data-widget-close="support" data-i18n-aria-label="close" aria-label="Close">×</button>
+        </div>
+        <img class="support-qr" src="assets/donate-qr.png" alt="PayPal support QR code" data-i18n-alt="supportQrAlt" />
+        <p class="widget-note" data-i18n="supportNote">Scan with PayPal to support FateBook.</p>
+      </div>
+    </aside>
+  </div>
 
   <!-- 分享卡片截图 -->
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" defer></script>

@@ -1,7 +1,14 @@
 # FateBook
 
-Production files for the FateBook GitHub Pages site. The application source and build instructions are maintained in the private `santur90/fatebook_private` repository.
+**A little book that remembers you. Open a page each day.**
 
-This repository contains only the static files GitHub Pages needs to serve the site.
+[Open FateBook](https://santur90.github.io/Fatebook/)
 
-Earlier commits in this repository predate the source split and may still contain the original source files.
+Choose a few answers, turn today’s page, and take a small thought with you. No account needed—your personal choices stay in your browser.
+
+- A new page each day, with a gentle reminder of what you shared
+- Save and share your page
+- Available in English and Chinese
+- Optional PayPal support and a visitor map
+
+The visitor map is provided by MapMyVisitors and shares its visitor count with the Unit Converter website.
