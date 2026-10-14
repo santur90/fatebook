@@ -2,7 +2,7 @@
 
 **A little book that remembers you. Open a page each day.**
 
-[Open FateBook](https://santur90.github.io/Fatebook/)
+[Open FateBook](https://santur90.github.io/fatebook/)
 
 Choose a few answers, turn today’s page, and take a small thought with you. No account needed—your personal choices stay in your browser.
 
