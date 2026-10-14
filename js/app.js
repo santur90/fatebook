@@ -1,322 +1,37 @@
-(function () {
-  "use strict";
-
-  const STORE_KEY = "fatebook_v1";
-  const $app = document.getElementById("app");
-  const params = new URLSearchParams(location.search);
-  const T = window.I18N[window.FATEBOOK_LANGUAGE];
-
-  // 调试：?reset 清空数据；?date=2026-10-20 模拟某一天
-  if (params.has("reset")) localStorage.removeItem(STORE_KEY);
-  const DATE_OVERRIDE = params.get("date");
-
-  /* ---------- 工具函数 ---------- */
-  function dateKey(d) {
-    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-  }
-  function todayKey(d) {
-    if (!d && DATE_OVERRIDE) return DATE_OVERRIDE;
-    return dateKey(d || new Date());
-  }
-  function toDate(key) { return new Date(key + "T00:00:00"); }
-  function daysBetween(a, b) { return Math.round((toDate(b) - toDate(a)) / 86400000); }
-  function shiftDay(key, n) { const d = toDate(key); d.setDate(d.getDate() + n); return dateKey(d); }
-  function uuid() {
-    return crypto.randomUUID ? crypto.randomUUID() : "u" + Date.now().toString(36) + Math.random().toString(36).slice(2);
-  }
-  function hash(str) {
-    let h = 2166136261;
-    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
-    return h >>> 0;
-  }
-  function rng(seed) { // mulberry32：同一用户同一天结果固定
-    return function () {
-      seed = (seed + 0x6d2b79f5) | 0;
-      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
-  /* ---------- 存储 ---------- */
-  function load() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) { return null; }
-  }
-  function save() { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
-
-  let state = load() || { userId: uuid(), createdAt: todayKey(), onboarding: {}, checkins: [], pages: [], opens: [] };
-
-  (function recordOpen() {
-    const t = todayKey();
-    if (!state.opens.some(o => o.date === t)) {
-      state.opens.push({ date: t, hour: new Date().getHours() });
-      state.opens = state.opens.slice(-60);
-    }
-    save();
-  })();
-
-  const getPage = date => state.pages.find(p => p.date === date);
-  const getCheckin = date => state.checkins.find(c => c.date === date);
-  const getContent = page => window.CONTENT.find(c => c.id === page.contentId) || page;
-  const onboardingDone = () => window.ONBOARDING.every(q => state.onboarding[q.id]);
-  function lastPageBefore(t) {
-    return state.pages.filter(p => p.date < t).sort((a, b) => (a.date < b.date ? 1 : -1))[0];
-  }
-
-  /* ---------- 路由 ---------- */
-  function route() {
-    const t = todayKey();
-    if (!onboardingDone()) return renderOnboarding();
-    const page = getPage(t);
-    if (page) return renderPage(page, false);
-    const prev = lastPageBefore(t);
-    if (prev && prev.done === undefined) return renderReview(prev);
-    if (!getCheckin(t)) return renderQuestion();
-    return renderClosedBook();
-  }
-
-  function optionsHTML(options) {
-    return '<div class="options">' + options.map(o =>
-      `<button class="opt" data-tag="${o.tag}" data-label="${o.label}"><span class="emoji">${o.emoji || ""}</span>${o.label}</button>`
-    ).join("") + "</div>";
-  }
-  function renderScreen(content) {
-    $app.innerHTML = `<button class="language-switch" id="language-switch" type="button">${T.language}</button>${content}`;
-    document.getElementById("language-switch").addEventListener("click", () => {
-      const language = window.FATEBOOK_LANGUAGE === "zh" ? "en" : "zh";
-      localStorage.setItem("fatebook_language", language);
-      const nextUrl = new URL(location.href);
-      nextUrl.searchParams.delete("lang");
-      nextUrl.searchParams.delete("reset");
-      location.assign(nextUrl.href);
-    });
-  }
-  function bindOptions(cb) {
-    $app.querySelectorAll(".opt").forEach(b => b.addEventListener("click", () => cb(b.dataset.tag, b.dataset.label)));
-  }
-
-  /* ---------- 页面：首次认识 ---------- */
-  function renderOnboarding() {
-    const list = window.ONBOARDING;
-    const q = list.find(x => !state.onboarding[x.id]);
-    const idx = list.indexOf(q);
-    renderScreen(`<section class="screen fade-in">
-      ${idx === 0 ? `<p class="intro">${T.onboardingIntro}</p>` : ""}
-      <p class="step">${idx + 1} / ${list.length}</p>
-      <h2 class="question">${q.text}</h2>
-      ${optionsHTML(q.options)}
-    </section>`);
-    bindOptions(tag => { state.onboarding[q.id] = tag; save(); route(); });
-  }
-
-  /* ---------- 页面：回顾上一页 ---------- */
-  function renderReview(prev) {
-    renderScreen(`<section class="screen fade-in">
-      <p class="intro">${T.lastPage}</p>
-      <blockquote class="quote">${getContent(prev).action}</blockquote>
-      <h2 class="question">${T.reviewQuestion}</h2>
-      ${optionsHTML([
-        { emoji: "✅", label: T.reviewOptions[0], tag: "done" },
-        { emoji: "⏳", label: T.reviewOptions[1], tag: "not" },
-        { emoji: "💭", label: T.reviewOptions[2], tag: "forgot" }
-      ])}
-    </section>`);
-    bindOptions(tag => { prev.done = tag; save(); route(); });
-  }
-
-  /* ---------- 页面：每日一问 ---------- */
-  function dailyQuestion(t) {
-    const all = window.DAILY_QUESTIONS;
-    const stateQs = all.filter(q => q.category === "state");
-    const otherQs = all.filter(q => q.category !== "state");
-    const day = Math.floor(toDate(t).getTime() / 86400000);
-    // 隔天出一次"状态"题，保证有足够数据做规律回忆
-    if (day % 2 === 0 || !otherQs.length) return stateQs[Math.floor(day / 2) % stateQs.length];
-    return otherQs[Math.floor(day / 2) % otherQs.length];
-  }
-
-  function renderQuestion() {
-    const t = todayKey();
-    const q = dailyQuestion(t);
-    renderScreen(`<section class="screen fade-in">
-      <p class="intro">${T.beforeQuestion}</p>
-      <h2 class="question">${q.text}</h2>
-      ${optionsHTML(q.options)}
-    </section>`);
-    bindOptions((tag, label) => {
-      state.checkins.push({ date: t, qid: q.id, cat: q.category, tag, label });
-      state.checkins = state.checkins.slice(-180);
-      save(); route();
-    });
-  }
-
-  /* ---------- 页面：合上的书 ---------- */
-  function renderClosedBook() {
-    renderScreen(`<section class="screen fade-in">
+(()=>{(function(){let u={zh:{title:"\u547D\u8FD0\u4E66 FateBook",description:"\u4E00\u672C\u4F1A\u8BB0\u4F4F\u4F60\u7684\u4E66\u3002\u6BCF\u5929\u7FFB\u5F00\u4E00\u9875\u3002",language:"English",onboardingIntro:"\u8FD9\u662F\u4E00\u672C\u4F1A\u8BB0\u4F4F\u4F60\u7684\u4E66\u3002<br>\u5148\u8BA9\u5B83\u8BA4\u8BC6\u4F60\u3002",lastPage:"\u4E0A\u4E00\u6B21\uFF0C\u4E66\u9875\u5BF9\u4F60\u8BF4\uFF1A",reviewQuestion:"\u4F60\u505A\u4E86\u5417\uFF1F",reviewOptions:["\u505A\u4E86","\u6CA1\u505A","\u5FD8\u4E86"],beforeQuestion:"\u7FFB\u5F00\u4E4B\u524D\uFF0C\u4E66\u60F3\u5148\u95EE\u4F60\u4E00\u53E5\u3002",bookTitle:"\u547D\u8FD0\u4E66",openBook:"\u7FFB\u5F00\u4ECA\u5929",oncePerDay:"\u6BCF\u5929\u53EA\u80FD\u7FFB\u5F00\u4E00\u6B21",page:"\u7B2C {page} \u9875",action:"\u4ECA\u65E5\u5C0F\u4E8B",feedbackQuestion:"\u8FD9\u4E00\u9875\u8BF4\u4E2D\u4F60\u4E86\u5417\uFF1F",feedbackSaved:"\u4E66\u5DF2\u8BB0\u4E0B\u4F60\u7684\u56DE\u7B54",feedbackOptions:["\u2728 \u8BF4\u4E2D\u4E86","\u{1F914} \u4E00\u822C","\u274C \u4E0D\u50CF\u6211"],share:"\u4FDD\u5B58\u8FD9\u4E00\u9875",tomorrow:"\u660E\u5929\u518D\u6765\uFF0C\u4E66\u4F1A\u7FFB\u5230\u65B0\u7684\u4E00\u9875",shareTitle:"\u6211\u7684\u547D\u8FD0\u4E66",shareError:"\u56FE\u7247\u751F\u6210\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u540E\u91CD\u8BD5\u3002",recallDone:"\u4E0A\u4E00\u9875\u7684\u5C0F\u4E8B\uFF0C\u4F60\u8BF4\u505A\u5230\u4E86\u3002\u6211\u8BB0\u4E0B\u4E86\u3002",recallNotDone:"\u4E0A\u4E00\u9875\u7684\u4E8B\u6CA1\u505A\u4E5F\u6CA1\u5173\u7CFB\uFF0C\u4E66\u9875\u4E0D\u50AC\u4EBA\u3002",recallWeek:"\u8FD9\u4E00\u5468\uFF0C\u4F60\u6709 {count} \u6B21\u8BF4\u81EA\u5DF1\u300C{label}\u300D\u3002",recallStreak:"\u8FD9\u662F\u4F60\u8FDE\u7EED\u7B2C {count} \u5929\u7FFB\u5F00\u6211\u3002",recallNight:"\u4F60\u603B\u5728\u6DF1\u591C\u7FFB\u5F00\u6211\u3002\u4ECA\u5929\u8FD9\u9875\uFF0C\u7559\u7ED9\u7761\u524D\u7684\u4F60\u3002",recallFirst:"\u6211\u4EEC\u624D\u521A\u8BA4\u8BC6\u3002\u5F80\u540E\u7684\u6BCF\u4E00\u9875\uFF0C\u6211\u90FD\u4F1A\u8BB0\u5F97\u3002",recallReturn:"\u4E66\u9875\u8BB0\u5F97\u4F60\u6765\u8FC7\u3002",stateLabels:{fire:"\u60F3\u51B2",wave:"\u60F3\u8EBA",fog:"\u6709\u70B9\u4E71",sprout:"\u5E73\u9759"}},en:{title:"FateBook",description:"A little book that remembers you. Open a page each day.",language:"\u4E2D\u6587",onboardingIntro:"A little book that remembers you.<br>Let\u2019s get to know each other.",lastPage:"Last time, this page said:",reviewQuestion:"Did you do it?",reviewOptions:["I did","Not yet","I forgot"],beforeQuestion:"Before we open today\u2019s page, a little question.",bookTitle:"FateBook",openBook:"Open today\u2019s page",oncePerDay:"One page a day",page:"Page {page}",action:"A little thing for today",feedbackQuestion:"Did this page feel like you?",feedbackSaved:"The book remembers your answer",feedbackOptions:["\u2728 It did","\u{1F914} A little","\u274C Not really"],share:"Save this page",tomorrow:"Come back tomorrow for a new page",shareTitle:"My FateBook",shareError:"Couldn\u2019t create the image. Please check your connection and try again.",recallDone:"You said you did the little thing from last time. I remember.",recallNotDone:"It\u2019s okay if you didn\u2019t get to it. The book won\u2019t rush you.",recallWeek:"This week, you said you felt \u201C{label}\u201D {count} times.",recallStreak:"You\u2019ve opened me {count} days in a row.",recallNight:"You often open me late at night. This page is for before bed.",recallFirst:"We\u2019ve only just met. I\u2019ll remember each page from here on.",recallReturn:"The pages remember you\u2019ve been here.",stateLabels:{fire:"ready to go",wave:"low on energy",fog:"a little scattered",sprout:"at ease"}}},b=new URLSearchParams(location.search),f=localStorage.getItem("fatebook_language"),a=b.get("lang"),p=(navigator.languages||[navigator.language||"en"]).map(d=>d.toLowerCase().startsWith("zh")?"zh":d.toLowerCase().startsWith("en")?"en":null).find(Boolean)||"en",g=["zh","en"].includes(a)?a:["zh","en"].includes(f)?f:p;window.FATEBOOK_LANGUAGE=g,window.I18N=u,document.documentElement.lang=g==="zh"?"zh-CN":"en",document.title=u[g].title,document.querySelector('meta[name="description"]').content=u[g].description})();window.ONBOARDING=[{id:"focus",text:"\u6700\u8FD1\uFF0C\u6700\u5360\u636E\u4F60\u5FC3\u601D\u7684\u662F\uFF1F",options:[{emoji:"\u{1F4BC}",label:"\u5DE5\u4F5C",tag:"work"},{emoji:"\u{1F3E0}",label:"\u5BB6\u4EBA",tag:"family"},{emoji:"\u{1F33F}",label:"\u81EA\u5DF1",tag:"self"},{emoji:"\u{1F4B0}",label:"\u94B1",tag:"money"}]},{id:"belief",text:"\u4F60\u66F4\u76F8\u4FE1\u54EA\u4E00\u4E2A\uFF1F",options:[{emoji:"\u26F0",label:"\u52AA\u529B",tag:"effort"},{emoji:"\u{1F319}",label:"\u65F6\u673A",tag:"timing"},{emoji:"\u{1F91D}",label:"\u4EBA",tag:"people"}]}];window.DAILY_QUESTIONS=[{id:"state_1",category:"state",text:"\u4ECA\u5929\u7684\u4F60\uFF0C\u66F4\u50CF\u54EA\u4E00\u79CD\uFF1F",options:[{emoji:"\u{1F525}",label:"\u60F3\u51B2",tag:"fire"},{emoji:"\u{1F30A}",label:"\u60F3\u8EBA",tag:"wave"},{emoji:"\u{1F32B}",label:"\u6709\u70B9\u4E71",tag:"fog"},{emoji:"\u{1F331}",label:"\u5E73\u9759",tag:"sprout"}]},{id:"state_2",category:"state",text:"\u6B64\u523B\u4F60\u7684\u5FC3\uFF0C\u662F\u4EC0\u4E48\u5929\u6C14\uFF1F",options:[{emoji:"\u2600\uFE0F",label:"\u6674",tag:"fire"},{emoji:"\u2601\uFE0F",label:"\u9634",tag:"wave"},{emoji:"\u{1F327}",label:"\u96E8",tag:"fog"},{emoji:"\u{1F324}",label:"\u591A\u4E91\u8F6C\u6674",tag:"sprout"}]},{id:"focus_1",category:"focus",text:"\u4ECA\u5929\u6700\u60F3\u7167\u987E\u597D\u7684\u662F\uFF1F",options:[{emoji:"\u{1F4BC}",label:"\u5DE5\u4F5C",tag:"work"},{emoji:"\u{1F3E0}",label:"\u5BB6\u4EBA",tag:"family"},{emoji:"\u{1F33F}",label:"\u81EA\u5DF1",tag:"self"},{emoji:"\u{1F4B0}",label:"\u94B1",tag:"money"}]},{id:"hope_1",category:"hope",text:"\u4ECA\u5929\uFF0C\u4F60\u5E0C\u671B\u53D1\u751F\u4EC0\u4E48\uFF1F",options:[{emoji:"\u{1F4E9}",label:"\u597D\u6D88\u606F",tag:"news"},{emoji:"\u{1F56F}",label:"\u5B89\u9759",tag:"calm"},{emoji:"\u26A1",label:"\u7A81\u7834",tag:"breakthrough"},{emoji:"\u{1FAC2}",label:"\u88AB\u7406\u89E3",tag:"understood"}]}];window.FATEBOOK_LANGUAGE==="en"&&(window.ONBOARDING=[{id:"focus",text:"What\u2019s been on your mind the most lately?",options:[{emoji:"\u{1F4BC}",label:"Work",tag:"work"},{emoji:"\u{1F3E0}",label:"Family",tag:"family"},{emoji:"\u{1F33F}",label:"Myself",tag:"self"},{emoji:"\u{1F4B0}",label:"Money",tag:"money"}]},{id:"belief",text:"What do you believe in most?",options:[{emoji:"\u26F0",label:"Effort",tag:"effort"},{emoji:"\u{1F319}",label:"Timing",tag:"timing"},{emoji:"\u{1F91D}",label:"People",tag:"people"}]}],window.DAILY_QUESTIONS=[{id:"state_1",category:"state",text:"Which feels most like you today?",options:[{emoji:"\u{1F525}",label:"Ready to go",tag:"fire"},{emoji:"\u{1F30A}",label:"Taking it easy",tag:"wave"},{emoji:"\u{1F32B}",label:"A little scattered",tag:"fog"},{emoji:"\u{1F331}",label:"At ease",tag:"sprout"}]},{id:"state_2",category:"state",text:"What\u2019s the weather like in your heart right now?",options:[{emoji:"\u2600\uFE0F",label:"Sunny",tag:"fire"},{emoji:"\u2601\uFE0F",label:"Cloudy",tag:"wave"},{emoji:"\u{1F327}",label:"Rainy",tag:"fog"},{emoji:"\u{1F324}",label:"Clearing up",tag:"sprout"}]},{id:"focus_1",category:"focus",text:"What would you most like to care for today?",options:[{emoji:"\u{1F4BC}",label:"Work",tag:"work"},{emoji:"\u{1F3E0}",label:"Family",tag:"family"},{emoji:"\u{1F33F}",label:"Myself",tag:"self"},{emoji:"\u{1F4B0}",label:"Money",tag:"money"}]},{id:"hope_1",category:"hope",text:"What are you hoping for today?",options:[{emoji:"\u{1F4E9}",label:"Good news",tag:"news"},{emoji:"\u{1F56F}",label:"A little calm",tag:"calm"},{emoji:"\u26A1",label:"A breakthrough",tag:"breakthrough"},{emoji:"\u{1FAC2}",label:"To feel understood",tag:"understood"}]}]);window.CONTENT=[{id:"c001",tags:["fire","work"],message:"\u706B\u5019\u6B63\u597D\u7684\u65F6\u5019\uFF0C\u5148\u505A\u6700\u96BE\u7684\u90A3\u4EF6\u3002",action:"\u628A\u4ECA\u5929\u6700\u60F3\u9003\u907F\u7684\u4EFB\u52A1\uFF0C\u5148\u505A 10 \u5206\u949F\u3002"},{id:"c002",tags:["fire","breakthrough"],message:"\u95E8\u5F80\u5F80\u5728\u4F60\u63A8\u7B2C\u4E8C\u6B21\u65F6\u624D\u5F00\u3002",action:"\u91CD\u65B0\u8054\u7CFB\u4E00\u4E2A\u4E0A\u6B21\u6CA1\u56DE\u97F3\u7684\u4EBA\u3002"},{id:"c003",tags:["fire","money"],message:"\u51B2\u52B2\u8981\u914D\u4E0A\u4E00\u5F20\u6E05\u5355\uFF0C\u624D\u4E0D\u4F1A\u70E7\u7A7A\u3002",action:"\u5199\u4E0B\u672C\u5468\u6700\u91CD\u8981\u7684\u4E00\u7B14\u652F\u51FA\u6216\u6536\u5165\u3002"},{id:"c004",tags:["fire","self"],message:"\u4ECA\u5929\u7684\u529B\u6C14\uFF0C\u503C\u5F97\u7528\u5728\u81EA\u5DF1\u8EAB\u4E0A\u4E00\u6B21\u3002",action:"\u7ED9\u81EA\u5DF1\u5B9A\u4E00\u4E2A\u4ECA\u665A\u524D\u80FD\u5B8C\u6210\u7684\u5C0F\u76EE\u6807\u3002"},{id:"c005",tags:["wave","calm"],message:"\u6F6E\u6C34\u9000\u4E0B\u7684\u65F6\u5019\uFF0C\u5CB8\u624D\u9732\u51FA\u6765\u3002",action:"\u5173\u6389\u901A\u77E5\uFF0C\u5B89\u9759\u5F85 10 \u5206\u949F\u3002"},{id:"c006",tags:["wave","self"],message:"\u4F11\u606F\u4E0D\u662F\u843D\u540E\uFF0C\u662F\u5728\u6362\u6C14\u3002",action:"\u4F38\u5C55\u8EAB\u4F53\u4E94\u5206\u949F\uFF0C\u7ED9\u81EA\u5DF1\u6362\u53E3\u6C14\u3002"},{id:"c007",tags:["wave","family"],message:"\u4E0D\u5FC5\u7528\u529B\uFF0C\u966A\u4F34\u672C\u8EAB\u5C31\u662F\u793C\u7269\u3002",action:"\u7ED9\u5BB6\u4EBA\u53D1\u4E00\u53E5\u95EE\u5019\uFF0C\u542C\u542C\u8FD1\u51B5\u3002"},{id:"c008",tags:["wave","work"],message:"\u6162\u4E00\u70B9\uFF0C\u4E5F\u662F\u5728\u5F80\u524D\u8D70\u3002",action:"\u6311\u4E00\u4EF6\u5C0F\u4E8B\uFF0C\u4E13\u6CE8\u505A\u4E94\u5206\u949F\u3002"},{id:"c009",tags:["fog","self"],message:"\u770B\u4E0D\u6E05\u7684\u65F6\u5019\uFF0C\u5148\u770B\u6E05\u811A\u4E0B\u4E00\u6B65\u3002",action:"\u5217\u51FA\u4E09\u4EF6\u5FC3\u4E8B\uFF0C\u53EA\u5708\u51FA\u773C\u524D\u7684\u4E00\u4EF6\u3002"},{id:"c010",tags:["fog","work"],message:"\u4E71\uFF0C\u662F\u56E0\u4E3A\u4F60\u5728\u610F\u7684\u592A\u591A\u3002",action:"\u5220\u6389\u6E05\u5355\u4E0A\u4E00\u4EF6\u5176\u5B9E\u4E0D\u5FC5\u505A\u7684\u4E8B\u3002"},{id:"c011",tags:["fog","understood"],message:"\u8BF4\u51FA\u6765\uFF0C\u96FE\u5C31\u6563\u4E86\u4E00\u534A\u3002",action:"\u7ED9\u4E00\u4E2A\u4FE1\u4EFB\u7684\u4EBA\u53D1\u4E00\u53E5\uFF1A\u6700\u8FD1\u6709\u70B9\u4E71\u3002"},{id:"c012",tags:["fog","money"],message:"\u6570\u5B57\u6BD4\u7126\u8651\u66F4\u8BDA\u5B9E\u3002",action:"\u82B1 5 \u5206\u949F\u770B\u4E00\u773C\u8FD9\u4E2A\u6708\u7684\u8D26\u3002"},{id:"c013",tags:["sprout","calm"],message:"\u5E73\u9759\u7684\u65E5\u5B50\uFF0C\u662F\u5728\u6084\u6084\u957F\u6839\u3002",action:"\u8BB0\u4E0B\u4ECA\u5929\u4E00\u4EF6\u8BA9\u4F60\u5B89\u5FC3\u7684\u5C0F\u4E8B\u3002"},{id:"c014",tags:["sprout","family"],message:"\u6700\u666E\u901A\u7684\u4E00\u5929\uFF0C\u5F80\u5F80\u6700\u503C\u5F97\u8BB0\u4F4F\u3002",action:"\u7ED9\u5BB6\u4EBA\u53D1\u4E00\u5F20\u4ECA\u5929\u770B\u5230\u7684\u7167\u7247\u3002"},{id:"c015",tags:["sprout","work"],message:"\u7A33\u7684\u65F6\u5019\uFF0C\u9002\u5408\u79CD\u4E0B\u4E00\u9897\u65B0\u79CD\u5B50\u3002",action:"\u82B1\u4E94\u5206\u949F\u4E86\u89E3\u4E00\u4E2A\u4F60\u597D\u5947\u7684\u65B0\u65B9\u5411\u3002"},{id:"c016",tags:["sprout","self"],message:"\u4F60\u6BD4\u4E0A\u4E2A\u6708\u7684\u81EA\u5DF1\uFF0C\u591A\u8D70\u4E86\u4E00\u6BB5\u8DEF\u3002",action:"\u5199\u4E00\u53E5\u8BDD\u5938\u5938\u6700\u8FD1\u7684\u81EA\u5DF1\u3002"},{id:"c017",tags:["sprout","news"],message:"\u597D\u6D88\u606F\u5E38\u5E38\u85CF\u5728\u4F60\u5DF2\u7ECF\u53D1\u51FA\u7684\u90A3\u5C01\u4FE1\u91CC\u3002",action:"\u82B1\u4E94\u5206\u949F\uFF0C\u793C\u8C8C\u8DDF\u8FDB\u4E00\u5C01\u90AE\u4EF6\u3002"},{id:"c018",tags:["sprout","family"],message:"\u5148\u6210\u4E3A\u522B\u4EBA\u7684\u597D\u6D88\u606F\u3002",action:"\u4E3B\u52A8\u544A\u8BC9\u5BB6\u4EBA\u4E00\u4EF6\u4ECA\u5929\u7684\u597D\u4E8B\u3002"},{id:"c019",tags:["fog","breakthrough"],message:"\u7A81\u7834\u5F80\u5F80\u53EA\u662F\u6362\u4E00\u4E2A\u95EE\u6CD5\u3002",action:"\u628A\u5361\u4F4F\u4F60\u7684\u95EE\u9898\uFF0C\u6362\u4E00\u79CD\u65B9\u5F0F\u5199\u4E0B\u6765\u3002"},{id:"c020",tags:["fire","money"],message:"\u5C0F\u5C0F\u7684\u6539\u53D8\uFF0C\u590D\u5229\u4F1A\u66FF\u4F60\u653E\u5927\u3002",action:"\u53D6\u6D88\u4E00\u4E2A\u4F60\u5DF2\u7ECF\u4E0D\u7528\u7684\u8BA2\u9605\u3002"},{id:"c021",tags:["wave","understood"],message:"\u88AB\u7406\u89E3\u4E4B\u524D\uFF0C\u5148\u88AB\u542C\u89C1\u3002",action:"\u95EE\u4E00\u4F4D\u4FE1\u4EFB\u7684\u4EBA\u6700\u8FD1\u8FC7\u5F97\u600E\u6837\u3002"},{id:"c022",tags:["sprout","understood"],message:"\u4F60\u4E0D\u9700\u8981\u6240\u6709\u4EBA\u90FD\u61C2\u4F60\u3002",action:"\u542C\u4E00\u9996\u559C\u6B22\u7684\u6B4C\uFF0C\u7559\u7ED9\u81EA\u5DF1\u51E0\u5206\u949F\u3002"},{id:"c023",tags:["wave","money"],message:"\u4E0D\u6025\u7740\u51B3\u5B9A\uFF0C\u4E5F\u662F\u4E00\u79CD\u51B3\u5B9A\u3002",action:"\u8BB0\u4E0B\u4E00\u4E2A\u975E\u5FC5\u8981\u6D88\u8D39\u5FF5\u5934\uFF0C\u660E\u5929\u518D\u51B3\u5B9A\u3002"},{id:"c024",tags:["sprout","work"],message:"\u5B89\u9759\u7684\u4E13\u6CE8\uFF0C\u80DC\u8FC7\u5FD9\u4E71\u7684\u4E00\u6574\u5929\u3002",action:"\u9009\u4E00\u6BB5\u4E94\u5206\u949F\uFF0C\u53EA\u505A\u4E00\u4EF6\u4E8B\u3002"}];var R={states:[{tag:"fire",messages:["\u70ED\u610F\u6B63\u76DB\u65F6","\u4F60\u5FC3\u91CC\u7684\u706B","\u884C\u52A8\u5DF2\u6709\u56DE\u58F0","\u52C7\u6C14\u6B63\u5728\u805A\u62E2","\u5411\u524D\u7684\u5FF5\u5934","\u4E0D\u5FC5\u7B49\u4E07\u4E8B\u4FF1\u5907","\u8FD9\u4E00\u523B\u6709\u529B\u91CF","\u4F60\u5DF2\u627E\u5230\u8D77\u70B9","\u70ED\u60C5\u9700\u8981\u51FA\u53E3","\u811A\u6B65\u53EF\u4EE5\u66F4\u8F7B"],starts:["\u5148\u505C\u4E00\u53E3\u6C14\uFF0C\u518D","\u628A\u6CE8\u610F\u529B\u6536\u56DE\u6765\uFF0C\u518D","\u5148\u60F3\u597D\u7B2C\u4E00\u6B65\uFF0C\u518D","\u7F13\u6162\u547C\u5438\u4E09\u6B21\uFF0C\u7136\u540E","\u7ED9\u81EA\u5DF1\u4E00\u5206\u949F\u51C6\u5907\uFF0C\u518D","\u76EF\u4F4F\u773C\u524D\u8FD9\u4E00\u4EF6\uFF0C\u518D","\u5148\u9009\u51FA\u6700\u91CD\u8981\u7684\uFF0C\u518D","\u8D77\u8EAB\u4F38\u5C55\u4E00\u4E0B\uFF0C\u518D","\u7A0D\u4F5C\u505C\u987F\uFF0C\u518D","\u6B47\u4E00\u4F1A\u513F\uFF0C\u7136\u540E"]},{tag:"wave",messages:["\u6F6E\u58F0\u4F1A\u6162\u4E0B\u6765","\u67D4\u8F6F\u4E5F\u662F\u529B\u91CF","\u4E0D\u5FC5\u9006\u7740\u6C34\u6D41","\u5141\u8BB8\u81EA\u5DF1\u7F13\u4E00\u7F13","\u5B89\u9759\u4E5F\u5728\u524D\u884C","\u8D77\u4F0F\u81EA\u6709\u8282\u594F","\u5148\u6B47\u4E00\u6B47\u4E5F\u597D","\u7ED9\u5FC3\u4E00\u70B9\u4F59\u5730","\u6162\u6162\u6765\u4E0D\u7B97\u8FDF","\u6B64\u523B\u65E0\u9700\u901E\u5F3A"],starts:["\u5B89\u9759\u5750\u4E00\u5206\u949F\uFF0C\u7136\u540E","\u6162\u4E00\u70B9\u5F00\u59CB\uFF0C\u518D","\u7ED9\u81EA\u5DF1\u4E24\u5206\u949F\u7F13\u51B2\uFF0C\u518D","\u4F38\u4E2A\u61D2\u8170\uFF0C\u7136\u540E","\u542C\u542C\u5468\u56F4\u7684\u58F0\u97F3\uFF0C\u518D","\u5148\u653E\u4E0B\u624B\u8FB9\u7684\u4E8B\uFF0C\u518D","\u559D\u51E0\u53E3\u6C34\uFF0C\u7136\u540E","\u8F7B\u8F7B\u547C\u5438\u4E09\u6B21\uFF0C\u518D","\u7ED9\u5FC3\u7559\u4E00\u70B9\u7A7A\u767D\uFF0C\u518D","\u5750\u7A33\u7247\u523B\uFF0C\u7136\u540E"]},{tag:"fog",messages:["\u96FE\u91CC\u5148\u770B\u811A\u4E0B","\u6DF7\u4E71\u4E5F\u6709\u51FA\u53E3","\u5148\u7167\u987E\u773C\u524D\u4E00\u6B65","\u4E0D\u5FC5\u4E00\u6B21\u60F3\u660E\u767D","\u7591\u95EE\u6B63\u5728\u53D8\u6E05\u6670","\u6162\u6162\u7406\u51FA\u5934\u7EEA","\u7B54\u6848\u53EF\u4EE5\u665A\u4E00\u70B9","\u5141\u8BB8\u6682\u65F6\u4E0D\u77E5\u9053","\u5C0F\u5C0F\u4E00\u6B65\u5C31\u591F","\u628A\u7EB7\u6742\u653E\u4E00\u653E"],starts:["\u5148\u6311\u4E00\u4EF6\u6700\u5C0F\u7684\uFF0C\u518D","\u82B1\u4E00\u5206\u949F\u7406\u6E05\u601D\u7EEA\uFF0C\u518D","\u628A\u95EE\u9898\u7F29\u5C0F\u4E00\u70B9\uFF0C\u518D","\u5148\u5212\u6389\u4E00\u4EF6\u4E0D\u6025\u7684\uFF0C\u518D","\u627E\u4E2A\u5B89\u9759\u89D2\u843D\uFF0C\u7136\u540E","\u6162\u6162\u547C\u5438\u51E0\u6B21\uFF0C\u518D","\u5148\u505A\u4E09\u6B21\u7F13\u6162\u547C\u5438\uFF0C\u518D","\u53EA\u6311\u4E00\u4EF6\u4E8B\uFF0C\u7136\u540E","\u505C\u4E0B\u6765\u60F3\u4E00\u60F3\uFF0C\u518D","\u5148\u4ECE\u6700\u7B80\u5355\u7684\u4E00\u6B65\u5F00\u59CB\uFF0C\u518D"]},{tag:"sprout",messages:["\u5E73\u9759\u6B63\u5728\u624E\u6839","\u5B89\u7A33\u4E5F\u662F\u751F\u957F","\u65B0\u82BD\u4E0D\u6025\u7740\u5F00\u82B1","\u65E5\u5E38\u91CC\u6709\u56DE\u54CD","\u4F60\u6B63\u5728\u6084\u6084\u79EF\u7D2F","\u6E29\u67D4\u5730\u7EE7\u7EED\u5C31\u597D","\u5C0F\u4E8B\u4E5F\u4F1A\u53D1\u82BD","\u6839\u7CFB\u6BD4\u82B1\u671F\u91CD\u8981","\u6B64\u523B\u5DF2\u6709\u4E00\u4E9B\u5149","\u8E0F\u5B9E\u672C\u8EAB\u6709\u529B\u91CF"],starts:["\u7559\u4E00\u5206\u949F\u611F\u53D7\u6B64\u523B\uFF0C\u518D","\u5E26\u7740\u597D\u5947\u5F00\u59CB\uFF0C\u518D","\u7ED9\u4ECA\u5929\u7559\u4E00\u70B9\u7A7A\u95F4\uFF0C\u518D","\u770B\u770B\u8EAB\u8FB9\u7684\u5C0F\u4E8B\uFF0C\u518D","\u5148\u7ED9\u81EA\u5DF1\u7559\u4E00\u70B9\u5B89\u9759\uFF0C\u518D","\u628A\u5FC3\u5B89\u653E\u5728\u5F53\u4E0B\uFF0C\u518D","\u5E26\u7740\u8F7B\u677E\u7684\u5FC3\u60C5\uFF0C\u518D","\u5148\u5BF9\u81EA\u5DF1\u6E29\u67D4\u4E00\u70B9\uFF0C\u518D","\u7ED9\u8FD9\u4EF6\u4E8B\u4E00\u4E2A\u5C0F\u5C0F\u5F00\u5934\uFF0C\u518D","\u5B89\u9759\u5730\u60F3\u4E00\u60F3\uFF0C\u518D"]}],themes:[{tag:"work",messages:["\u5148\u6536\u597D\u4E00\u4EF6\u4E8B","\u628A\u4E13\u6CE8\u8FD8\u7ED9\u81EA\u5DF1","\u4ECA\u5929\u53EA\u505A\u91CD\u8981\u7684","\u7ED9\u8BA1\u5212\u7559\u4E2A\u7A7A\u4F4D","\u8E0F\u5B9E\u80DC\u8FC7\u8D76\u8DEF","\u628A\u8FB9\u754C\u8BF4\u6E05\u695A","\u4E00\u4EF6\u4E8B\u4E5F\u7B97\u8FDB\u5C55","\u5148\u5B8C\u6210\u518D\u6C42\u5B8C\u7F8E","\u4F60\u7684\u8282\u594F\u5F88\u91CD\u8981","\u503C\u5F97\u7684\u4E8B\u6162\u6162\u505A"],actions:["\u5199\u4E0B\u4ECA\u5929\u6700\u91CD\u8981\u7684\u4E00\u4EF6\u4E8B\u3002","\u6E05\u7406\u684C\u9762\u4E00\u5C0F\u89D2\u3002","\u56DE\u4E00\u5C01\u7B80\u77ED\u7684\u90AE\u4EF6\u3002","\u5217\u51FA\u660E\u5929\u7684\u4E09\u4EF6\u5F85\u529E\u3002","\u5173\u6389\u4E00\u4E2A\u4E0D\u5FC5\u8981\u7684\u901A\u77E5\u3002","\u628A\u4E00\u4E2A\u4EFB\u52A1\u62C6\u6210\u4E24\u6B65\u3002","\u4E13\u6CE8\u5904\u7406\u4E00\u4EF6\u5C0F\u4E8B\u4E94\u5206\u949F\u3002","\u6574\u7406\u4E00\u4E2A\u6587\u4EF6\u6216\u6587\u4EF6\u5939\u3002","\u7ED9\u65E5\u7A0B\u7559\u51FA\u5341\u5206\u949F\u7A7A\u767D\u3002","\u8BB0\u5F55\u4E00\u4E2A\u521A\u5B8C\u6210\u7684\u5C0F\u8FDB\u5C55\u3002"]},{tag:"family",messages:["\u628A\u7275\u6302\u8BF4\u51FA\u53E3","\u966A\u4F34\u65E0\u9700\u76DB\u5927","\u95EE\u5019\u5C31\u662F\u4E00\u4EFD\u793C\u7269","\u542C\u5B8C\u518D\u7ED9\u51FA\u56DE\u5E94","\u6E29\u67D4\u53EF\u4EE5\u5F88\u7B80\u5355","\u8BB0\u5F97\u7559\u4E00\u70B9\u8010\u5FC3","\u5173\u7CFB\u5728\u5C0F\u4E8B\u91CC","\u8BA9\u60E6\u5FF5\u6709\u4E2A\u56DE\u97F3","\u4ECA\u5929\u4E5F\u53EF\u4EE5\u9760\u8FD1","\u771F\u5FC3\u4E0D\u5FC5\u8BF4\u5F88\u591A"],actions:["\u7ED9\u5BB6\u4EBA\u53D1\u4E00\u53E5\u7B80\u5355\u95EE\u5019\u3002","\u8BA4\u771F\u542C\u5BF9\u65B9\u8BF4\u4E94\u5206\u949F\u3002","\u53D1\u4E00\u5F20\u4ECA\u5929\u770B\u5230\u7684\u7167\u7247\u3002","\u8BF4\u4E00\u53E5\u5177\u4F53\u7684\u611F\u8C22\u3002","\u95EE\u95EE\u5BB6\u4EBA\u4ECA\u5929\u8FC7\u5F97\u600E\u6837\u3002","\u5206\u4EAB\u4E00\u4EF6\u4ECA\u5929\u7684\u5C0F\u4E8B\u3002","\u5B89\u6392\u4E00\u6B21\u4E0D\u770B\u624B\u673A\u7684\u804A\u5929\u3002","\u7ED9\u91CD\u8981\u7684\u4EBA\u53D1\u4E2A\u8BED\u97F3\u3002","\u8BB0\u4E0B\u4E00\u4E2A\u5BB6\u4EBA\u7684\u8FD1\u51B5\u3002","\u4E3B\u52A8\u8868\u8FBE\u4E00\u6B21\u5173\u5FC3\u3002"]},{tag:"self",messages:["\u7559\u4E00\u70B9\u7ED9\u81EA\u5DF1","\u4F60\u4E5F\u503C\u5F97\u88AB\u7167\u987E","\u5148\u542C\u542C\u5FC3\u91CC\u7684\u8BDD","\u4E0D\u5FC5\u603B\u662F\u5F88\u575A\u5F3A","\u7ED9\u81EA\u5DF1\u4E00\u70B9\u5BBD\u5F85","\u4F11\u606F\u4E5F\u662F\u6B63\u7ECF\u4E8B","\u4F60\u7684\u611F\u53D7\u5F88\u91CD\u8981","\u5141\u8BB8\u81EA\u5DF1\u6162\u4E00\u70B9","\u7167\u987E\u81EA\u5DF1\u4E0D\u81EA\u79C1","\u91CD\u65B0\u7AD9\u56DE\u81EA\u5DF1\u8FD9\u8FB9"],actions:["\u559D\u4E00\u676F\u6C34\uFF0C\u6162\u6162\u4F11\u606F\u7247\u523B\u3002","\u5199\u4E0B\u4E00\u4EF6\u503C\u5F97\u80AF\u5B9A\u81EA\u5DF1\u7684\u4E8B\u3002","\u4F38\u5C55\u8EAB\u4F53\u4E94\u5206\u949F\u3002","\u628A\u624B\u673A\u653E\u4E0B\u5B89\u9759\u4E24\u5206\u949F\u3002","\u542C\u4E00\u9996\u559C\u6B22\u7684\u6B4C\u3002","\u6574\u7406\u4E00\u4E2A\u8BA9\u81EA\u5DF1\u8212\u670D\u7684\u5C0F\u89D2\u843D\u3002","\u4E3A\u81EA\u5DF1\u51C6\u5907\u4E00\u4EFD\u7B80\u5355\u70B9\u5FC3\u3002","\u8D70\u5230\u7A97\u8FB9\u770B\u770B\u8FDC\u5904\u3002","\u5199\u4E0B\u6B64\u523B\u6700\u771F\u5B9E\u7684\u611F\u53D7\u3002","\u628A\u4E00\u4EF6\u4E0D\u6025\u7684\u4E8B\u7559\u5230\u660E\u5929\u3002"]},{tag:"money",messages:["\u5148\u770B\u6E05\u518D\u51B3\u5B9A","\u6570\u5B57\u53EF\u4EE5\u5E26\u6765\u8E0F\u5B9E","\u7ED9\u9884\u7B97\u4E00\u70B9\u8010\u5FC3","\u4E0D\u6025\u7740\u7ACB\u523B\u9009\u62E9","\u5C0F\u4E60\u60EF\u6162\u6162\u7D2F\u79EF","\u82B1\u94B1\u524D\u505C\u4E00\u505C","\u6E05\u695A\u6BD4\u731C\u6D4B\u5B89\u5FC3","\u8BA1\u5212\u53EF\u4EE5\u5F88\u6734\u7D20","\u7559\u610F\u81EA\u5DF1\u7684\u4F18\u5148\u7EA7","\u4E00\u6B65\u4E00\u6B65\u66F4\u7A33\u5F53"],actions:["\u770B\u4E00\u773C\u672C\u5468\u7684\u652F\u51FA\u8BB0\u5F55\u3002","\u8BB0\u4E0B\u4E00\u7B14\u4ECA\u5929\u7684\u82B1\u8D39\u3002","\u68C0\u67E5\u4E00\u4E2A\u8BA2\u9605\u662F\u5426\u8FD8\u9700\u8981\u3002","\u4E3A\u672C\u5468\u8BBE\u5B9A\u4E00\u4E2A\u5C0F\u9884\u7B97\u3002","\u6574\u7406\u94B1\u5305\u6216\u652F\u4ED8\u8D26\u5355\u3002","\u628A\u4E00\u4E2A\u60F3\u4E70\u7684\u4E1C\u897F\u8BB0\u4E0B\u6765\uFF0C\u660E\u5929\u518D\u770B\u3002","\u5217\u51FA\u4E00\u9879\u8FD1\u671F\u5FC5\u8981\u5F00\u9500\u3002","\u82B1\u4E94\u5206\u949F\u6838\u5BF9\u4E00\u7B14\u8D26\u76EE\u3002","\u627E\u51FA\u4E00\u9879\u53EF\u4EE5\u6682\u505C\u7684\u975E\u5FC5\u8981\u652F\u51FA\u3002","\u5199\u4E0B\u4E00\u4E2A\u77ED\u671F\u50A8\u84C4\u76EE\u6807\u3002"]},{tag:"news",messages:["\u8010\u5FC3\u7B49\u4E00\u7B49\u56DE\u97F3","\u6D88\u606F\u4E4B\u5916\u8FD8\u6709\u751F\u6D3B","\u628A\u80FD\u505A\u7684\u4E00\u6B65\u505A\u597D","\u4E0D\u786E\u5B9A\u65F6\u5148\u7A33\u4F4F","\u76FC\u671B\u4E5F\u53EF\u4EE5\u5F88\u8F7B","\u7559\u610F\u5DF2\u7ECF\u5230\u6765\u7684\u597D","\u7B49\u5F85\u4E0D\u4EE3\u8868\u505C\u4E0B","\u4ECA\u5929\u5148\u7167\u987E\u81EA\u5DF1","\u628A\u671F\u5F85\u653E\u5F97\u67D4\u8F6F","\u4E0D\u5FC5\u8FFD\u7740\u7B54\u6848\u8DD1"],actions:["\u68C0\u67E5\u4E00\u6B21\u91CD\u8981\u6D88\u606F\u5373\u53EF\u3002","\u7ED9\u7B49\u5F85\u56DE\u590D\u7684\u4EBA\u53D1\u53E5\u7B80\u77ED\u8DDF\u8FDB\u3002","\u786E\u8BA4\u4E00\u9879\u8FD1\u671F\u5B89\u6392\u7684\u65F6\u95F4\u3002","\u5199\u4E0B\u6536\u5230\u7684\u4E00\u4E2A\u597D\u6D88\u606F\u3002","\u628A\u4E00\u4E2A\u5F85\u786E\u8BA4\u4E8B\u9879\u8BB0\u8FDB\u6E05\u5355\u3002","\u67E5\u770B\u4E00\u6B21\u90AE\u4EF6\u540E\u653E\u4E0B\u624B\u673A\u3002","\u4E3A\u4E00\u4EF6\u7B49\u5F85\u4E2D\u7684\u4E8B\u8BBE\u4E2A\u63D0\u9192\u3002","\u544A\u8BC9\u670B\u53CB\u4E00\u4EF6\u6700\u8FD1\u7684\u5C0F\u8FDB\u5C55\u3002","\u6574\u7406\u4E00\u6761\u9700\u8981\u56DE\u590D\u7684\u4FE1\u606F\u3002","\u6682\u505C\u5237\u65B0\u6D88\u606F\u4E94\u5206\u949F\u3002"]},{tag:"calm",messages:["\u628A\u5FC3\u653E\u56DE\u6B64\u523B","\u5B89\u9759\u4E5F\u503C\u5F97\u73CD\u60DC","\u4E0D\u5FC5\u6025\u7740\u6709\u7B54\u6848","\u7ED9\u81EA\u5DF1\u4E00\u5904\u7A7A\u767D","\u5E73\u548C\u4ECE\u5C0F\u5904\u5F00\u59CB","\u6162\u4E0B\u6765\u542C\u542C\u81EA\u5DF1","\u6B64\u523B\u5DF2\u7ECF\u8DB3\u591F","\u628A\u547C\u5438\u8FD8\u7ED9\u81EA\u5DF1","\u7559\u4E00\u76CF\u5FC3\u91CC\u7684\u706F","\u5B89\u7A33\u662F\u4E00\u79CD\u9009\u62E9"],actions:["\u95ED\u4E0A\u773C\u775B\u7F13\u6162\u547C\u5438\u4E00\u5206\u949F\u3002","\u628A\u684C\u8FB9\u4E00\u4EF6\u7269\u54C1\u5F52\u4F4D\u3002","\u6682\u65F6\u5173\u6389\u901A\u77E5\u4E94\u5206\u949F\u3002","\u6CE1\u4E00\u676F\u559C\u6B22\u7684\u996E\u54C1\u3002","\u8D70\u5230\u6237\u5916\u6162\u6162\u8D70\u4E94\u5206\u949F\u3002","\u542C\u4E00\u6BB5\u8212\u7F13\u7684\u97F3\u4E50\u3002","\u628A\u80A9\u9888\u8F7B\u8F7B\u4F38\u5C55\u4E00\u4E0B\u3002","\u6536\u62FE\u4E00\u4E2A\u5F88\u5C0F\u7684\u7A7A\u95F4\u3002","\u770B\u4E00\u4F1A\u513F\u7A97\u5916\u7684\u5929\u7A7A\u3002","\u7761\u524D\u628A\u624B\u673A\u653E\u8FDC\u4E00\u70B9\u3002"]},{tag:"breakthrough",messages:["\u6362\u4E2A\u89D2\u5EA6\u8BD5\u8BD5","\u51FA\u53E3\u4E5F\u8BB8\u5F88\u5C0F","\u5148\u8BD5\u4E00\u4E2A\u65B0\u65B9\u6CD5","\u5361\u4F4F\u4E0D\u662F\u7EC8\u70B9","\u95EE\u9898\u53EF\u4EE5\u91CD\u65B0\u63D0\u95EE","\u8BD5\u63A2\u4E5F\u662F\u5728\u524D\u8FDB","\u4E00\u6B65\u5C31\u80FD\u677E\u52A8\u5C40\u9762","\u5148\u52A8\u624B\u518D\u8C03\u6574","\u4E0D\u5FC5\u4E00\u6B21\u89E3\u51B3\u5168\u90E8","\u65B0\u7684\u8DEF\u4ECE\u5C0F\u5904\u5F00\u59CB"],actions:["\u628A\u5361\u4F4F\u7684\u95EE\u9898\u6362\u79CD\u8BF4\u6CD5\u5199\u4E0B\u3002","\u4E3A\u96BE\u9898\u5217\u51FA\u4E24\u4E2A\u65B0\u89D2\u5EA6\u3002","\u8BD5\u505A\u4E00\u4E2A\u4E94\u5206\u949F\u7684\u5C0F\u6B65\u9AA4\u3002","\u5411\u53EF\u4FE1\u7684\u4EBA\u8BF7\u6559\u4E00\u4E2A\u5177\u4F53\u95EE\u9898\u3002","\u5199\u4E0B\u4E00\u4E2A\u6682\u65F6\u53EF\u884C\u7684\u65B9\u6848\u3002","\u628A\u5927\u76EE\u6807\u62C6\u6210\u7B2C\u4E00\u4E2A\u52A8\u4F5C\u3002","\u627E\u51FA\u76EE\u524D\u6700\u5BB9\u6613\u6539\u53D8\u7684\u4E00\u70B9\u3002","\u8BD5\u7740\u53CD\u8FC7\u6765\u63CF\u8FF0\u773C\u524D\u7684\u95EE\u9898\u3002","\u4E3A\u4E00\u4E2A\u60F3\u6CD5\u5217\u51FA\u5229\u5F0A\u5404\u4E00\u6761\u3002","\u7ED9\u6401\u7F6E\u7684\u4E8B\u60C5\u91CD\u65B0\u5F00\u4E2A\u5C0F\u5934\u3002"]},{tag:"understood",messages:["\u5766\u767D\u4E00\u70B9\u5FC3\u610F","\u5148\u8BF4\u51FA\u771F\u6B63\u9700\u8981","\u88AB\u542C\u89C1\u4ECE\u8868\u8FBE\u5F00\u59CB","\u4E0D\u5FC5\u8BA9\u6BCF\u4E2A\u4EBA\u61C2\u4F60","\u611F\u53D7\u503C\u5F97\u88AB\u8BA4\u771F\u5BF9\u5F85","\u7ED9\u771F\u5FC3\u4E00\u4E2A\u4F4D\u7F6E","\u628A\u9700\u8981\u8BF4\u5F97\u5177\u4F53","\u7406\u89E3\u4E5F\u9700\u8981\u65F6\u95F4","\u6E29\u67D4\u5730\u8868\u8FBE\u8FB9\u754C","\u4F60\u53EF\u4EE5\u5BFB\u6C42\u652F\u6301"],actions:["\u5199\u4E0B\u4E00\u53E5\u60F3\u5BF9\u522B\u4EBA\u8BF4\u7684\u8BDD\u3002","\u544A\u8BC9\u4FE1\u4EFB\u7684\u4EBA\u4F60\u73B0\u5728\u7684\u611F\u53D7\u3002","\u660E\u786E\u8BF4\u51FA\u4E00\u4EF6\u5C0F\u5C0F\u7684\u9700\u8981\u3002","\u95EE\u5BF9\u65B9\u662F\u5426\u65B9\u4FBF\u542C\u4F60\u8BF4\u4E94\u5206\u949F\u3002","\u7ED9\u5173\u5FC3\u4F60\u7684\u4EBA\u56DE\u4E00\u53E5\u8FD1\u51B5\u3002","\u628A\u4E00\u4E2A\u8FB9\u754C\u7528\u5E73\u548C\u7684\u8BDD\u5199\u4E0B\u6765\u3002","\u8BA4\u771F\u542C\u81EA\u5DF1\u6B64\u523B\u6700\u5728\u610F\u4EC0\u4E48\u3002","\u5BF9\u4E00\u4E2A\u5584\u610F\u8868\u8FBE\u611F\u8C22\u3002","\u7EA6\u5B9A\u4E00\u6B21\u8F7B\u677E\u7684\u8C08\u8BDD\u65F6\u95F4\u3002","\u5148\u628A\u60F3\u8BF4\u7684\u8BDD\u8BB0\u5728\u5907\u5FD8\u5F55\u91CC\u3002"]}]},X=25;R.states.forEach((u,b)=>{R.themes.forEach((f,a)=>{for(let h=0;h<10;h++){let p=(h+b+a)%10;window.CONTENT.push({id:"c"+String(X++).padStart(3,"0"),tags:[u.tag,f.tag],message:u.messages[h]+"\uFF0C"+f.messages[(h+a)%10]+"\u3002",action:u.starts[h]+f.actions[p]})}})});if(window.FATEBOOK_LANGUAGE==="en"){window.CONTENT=[{id:"c001",tags:["fire","work"],message:"When the moment is right, begin with the hardest thing.",action:"Spend ten minutes on the task you\u2019ve been avoiding."},{id:"c002",tags:["fire","breakthrough"],message:"Sometimes the door opens on the second try.",action:"Reach out once more to someone you haven\u2019t heard back from."},{id:"c003",tags:["fire","money"],message:"A little planning keeps your spark from burning out.",action:"Write down one important expense or source of income this week."},{id:"c004",tags:["fire","self"],message:"Let some of today\u2019s energy belong to you.",action:"Set yourself one small goal to finish by tonight."},{id:"c005",tags:["wave","calm"],message:"When the tide recedes, the shore comes into view.",action:"Turn off notifications and sit quietly for ten minutes."},{id:"c006",tags:["wave","self"],message:"Rest isn\u2019t falling behind; it\u2019s catching your breath.",action:"Stretch for five minutes and give yourself a moment to reset."},{id:"c007",tags:["wave","family"],message:"You don\u2019t have to try hard; being there is a gift.",action:"Send a family member a quick hello and ask how they are."},{id:"c008",tags:["wave","work"],message:"Taking it slowly is still moving forward.",action:"Pick one small task and focus on it for five minutes."},{id:"c009",tags:["fog","self"],message:"When you can\u2019t see far, look at the next step.",action:"List three things on your mind and circle just one."},{id:"c010",tags:["fog","work"],message:"Things feel tangled when you\u2019re carrying too much.",action:"Cross one unnecessary task off your list."},{id:"c011",tags:["fog","understood"],message:"Saying it out loud can clear half the fog.",action:"Text someone you trust: \u201CThings feel a little tangled lately.\u201D"},{id:"c012",tags:["fog","money"],message:"Numbers are often kinder than worry.",action:"Take five minutes to look over this month\u2019s spending."},{id:"c013",tags:["sprout","calm"],message:"Quiet days are when roots grow.",action:"Write down one small thing that made you feel at ease today."},{id:"c014",tags:["sprout","family"],message:"Ordinary days are often the ones worth keeping.",action:"Send your family a photo of something you saw today."},{id:"c015",tags:["sprout","work"],message:"When things are steady, plant one new seed.",action:"Spend five minutes exploring something you\u2019re curious about."},{id:"c016",tags:["sprout","self"],message:"You\u2019ve come farther than you were a month ago.",action:"Write one kind sentence about yourself."},{id:"c017",tags:["sprout","news"],message:"Good news sometimes waits in a message you\u2019ve already sent.",action:"Take five minutes to politely follow up on an email."},{id:"c018",tags:["sprout","family"],message:"You can be someone else\u2019s good news.",action:"Tell your family one good thing from today."},{id:"c019",tags:["fog","breakthrough"],message:"A breakthrough can begin with a different question.",action:"Rewrite the problem that\u2019s been keeping you stuck."},{id:"c020",tags:["fire","money"],message:"Small changes grow quietly over time.",action:"Cancel one subscription you no longer use."},{id:"c021",tags:["wave","understood"],message:"Before understanding comes the feeling of being heard.",action:"Ask someone you trust how they\u2019ve been lately."},{id:"c022",tags:["sprout","understood"],message:"You don\u2019t need everyone to understand you.",action:"Listen to a favorite song and take a few minutes for yourself."},{id:"c023",tags:["wave","money"],message:"Waiting to decide is a decision, too.",action:"Write down a nonessential purchase and revisit it tomorrow."},{id:"c024",tags:["sprout","work"],message:"Quiet focus can be worth more than a busy day.",action:"Choose one thing and give it five minutes of focus."}];let u=[{tag:"fire",messages:["A spark is gathering","Your inner fire","Action is finding its echo","Courage is drawing near","The urge to move","You needn\u2019t wait for perfect","There is strength in this moment","You\u2019ve found a beginning","Your passion needs a path","Your steps can feel lighter"],starts:["Pause for a breath, then","Bring your attention back, then","Choose your first step, then","Take three slow breaths, then","Give yourself a minute, then","Focus on what\u2019s in front of you, then","Pick what matters most, then","Stand and stretch, then","Take a small pause, then","Rest for a moment, then"]},{tag:"wave",messages:["The waves will soften","Gentleness is a strength","You needn\u2019t swim upstream","You\u2019re allowed to slow down","Quiet is a kind of progress","Every tide has its rhythm","It\u2019s okay to take a pause","Give your heart some room","There\u2019s no rush to arrive","You don\u2019t have to push today"],starts:["Sit quietly for a minute, then","Begin a little more slowly, then","Give yourself two minutes, then","Stretch your arms, then","Listen to the sounds around you, then","Set aside what you\u2019re doing, then","Take a few sips of water, then","Take three gentle breaths, then","Leave a little space, then","Settle in for a moment, then"]},{tag:"fog",messages:["Look for the next step","Even a tangle has an end","Care for the step at hand","You needn\u2019t solve it all","The question is getting clearer","The pieces will come together","The answer can wait","It\u2019s okay not to know yet","One small step is enough","Let the noise settle"],starts:["Choose the smallest thing, then","Take a minute to sort your thoughts, then","Make the question smaller, then","Cross off one thing that can wait, then","Find a quiet corner and","Take a few slow breaths, then","Take three steady breaths, then","Choose just one thing, then","Pause and give it a moment, then","Start with the easiest step, then"]},{tag:"sprout",messages:["Calm is taking root","Steadiness is a kind of growth","A new bud takes its time","The everyday leaves an echo","You\u2019re quietly building","Keep going gently","Small things can take root","Roots matter more than bloom","There\u2019s already a little light","Steady has its own strength"],starts:["Take a minute to notice this moment, then","Begin with curiosity, then","Make a little room in your day, then","Notice a small thing nearby, then","Give yourself a quiet moment, then","Settle into the present, then","Begin with a lighter heart, then","Be a little kinder to yourself, then","Give this a small beginning, then","Sit quietly and consider, then"]}],b=[{tag:"work",messages:["put one thing in order","bring your focus back","choose what matters today","leave room in the plan","steady beats hurried","make your boundaries clear","one thing is progress","done can come before perfect","your pace matters","good work takes its time"],actions:["write down the one thing that matters most today.","clear one small corner of your desk.","reply to one short email.","list three things for tomorrow.","turn off one unnecessary notification.","break a task into two steps.","focus on one small task for five minutes.","organize one file or folder.","leave ten minutes open in your schedule.","note one small thing you\u2019ve finished."]},{tag:"family",messages:["let care find its words","presence needn\u2019t be grand","a hello is a small gift","listen before you answer","kindness can be simple","leave a little room for patience","relationships live in small things","let someone know you\u2019re thinking of them","there\u2019s room to come closer","a little sincerity goes far"],actions:["send a family member a simple hello.","listen to someone for five minutes.","share a photo from your day.","say thank you for one specific thing.","ask a family member how their day went.","share one small thing from today.","have a short chat without your phone.","send someone you care about a voice message.","write down one update about your family.","show someone you care in a small way."]},{tag:"self",messages:["save a little room for yourself","you deserve care, too","listen for what\u2019s in your heart","you don\u2019t have to be strong all the time","go a little easier on yourself","rest belongs on the list","your feelings matter","you can take your time","caring for yourself isn\u2019t selfish","come back to your own side"],actions:["drink a glass of water and take a short break.","write down one thing you appreciate about yourself.","stretch for five minutes.","put your phone down for two quiet minutes.","listen to a song you love.","make one small corner feel more comfortable.","make yourself a simple snack.","walk to a window and look into the distance.","write down how you really feel right now.","leave one non-urgent thing for tomorrow."]},{tag:"money",messages:["see clearly before deciding","numbers can bring steadiness","give your budget some patience","there\u2019s no need to decide at once","small habits add up","pause before you spend","clarity feels better than guessing","a simple plan is enough","notice what matters to you","one steady step at a time"],actions:["look over this week\u2019s spending.","write down one thing you spent today.","check whether you still need one subscription.","set a small budget for this week.","tidy up your wallet or payment statements.","write down something you want and revisit it tomorrow.","list one upcoming essential expense.","spend five minutes checking one bill.","find one nonessential expense you could pause.","write down a short-term savings goal."]},{tag:"news",messages:["give the reply a little time","life is bigger than the inbox","take the step you can take","steady yourself in the unknown","hope can be held lightly","notice the good that\u2019s already here","waiting doesn\u2019t mean standing still","care for yourself today","hold your hopes gently","you don\u2019t have to chase an answer"],actions:["check once for an important update.","send a brief follow-up to someone you\u2019re waiting to hear from.","confirm the time of an upcoming plan.","write down one piece of good news you\u2019ve received.","add one pending question to your list.","check your email once, then put your phone away.","set a reminder for something you\u2019re waiting on.","tell a friend one small update from lately.","organize one message that needs a reply.","take a five-minute break from checking for updates."]},{tag:"calm",messages:["bring your heart back to now","quiet is worth keeping","you needn\u2019t find the answer yet","leave yourself a little space","peace begins with small things","slow down and listen inward","this moment is enough","come back to your breath","keep a small light within","calm can be a choice"],actions:["close your eyes and breathe slowly for a minute.","put one thing on your desk back in its place.","turn off notifications for five minutes.","make yourself a favorite drink.","take a slow five-minute walk outside.","listen to a little calming music.","gently stretch your neck and shoulders.","tidy one very small space.","look out the window at the sky.","leave your phone farther away before bed."]},{tag:"breakthrough",messages:["try seeing it another way","the opening may be small","try one new approach","being stuck isn\u2019t the end","ask the question again","testing is a kind of progress","one step can loosen the knot","start first, adjust as you go","you needn\u2019t solve it all at once","new paths start small"],actions:["rewrite the problem in different words.","list two new angles on a hard question.","try one small step for five minutes.","ask someone you trust one specific question.","write down one workable idea for now.","break a big goal into its first action.","find the easiest thing you could change.","describe the problem from the opposite point of view.","write one pro and one con for an idea.","give a postponed task a fresh, tiny start."]},{tag:"understood",messages:["let a little honesty through","say what you really need","being heard begins with sharing","not everyone has to understand","your feelings deserve care","make room for what\u2019s true","be specific about what you need","understanding takes time, too","set a boundary with kindness","you\u2019re allowed to ask for support"],actions:["write down one thing you wish you could say.","tell someone you trust how you\u2019re feeling.","clearly ask for one small thing you need.","ask someone if they can listen for five minutes.","send a quick update to someone who cares about you.","write a boundary in calm, simple words.","listen for what matters most to you right now.","thank someone for a small kindness.","set a time for an easy conversation.","write what you want to say in your notes first."]}],f=25;u.forEach((a,h)=>{b.forEach((p,g)=>{for(let d=0;d<10;d++){let T=(d+g)%10,O=(d+h+g)%10;window.CONTENT.push({id:"c"+String(f++).padStart(3,"0"),tags:[a.tag,p.tag],message:`${a.messages[d]}\u2014${p.messages[T]}.`,action:`${a.starts[d]} ${p.actions[O]}`})}})})}(function(){"use strict";let u="fatebook_v1",b=document.getElementById("app"),f=new URLSearchParams(location.search),a=window.I18N[window.FATEBOOK_LANGUAGE];f.has("reset")&&localStorage.removeItem(u);let h=f.get("date");function p(t){return t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0")}function g(t){return!t&&h?h:p(t||new Date)}function d(t){return new Date(t+"T00:00:00")}function T(t,e){return Math.round((d(e)-d(t))/864e5)}function O(t,e){let o=d(t);return o.setDate(o.getDate()+e),p(o)}function P(){return crypto.randomUUID?crypto.randomUUID():"u"+Date.now().toString(36)+Math.random().toString(36).slice(2)}function G(t){let e=2166136261;for(let o=0;o<t.length;o++)e^=t.charCodeAt(o),e=Math.imul(e,16777619);return e>>>0}function W(t){return function(){t=t+1831565813|0;let e=Math.imul(t^t>>>15,1|t);return e=e+Math.imul(e^e>>>7,61|e)^e,((e^e>>>14)>>>0)/4294967296}}function Y(){try{return JSON.parse(localStorage.getItem(u))}catch{return null}}function k(){localStorage.setItem(u,JSON.stringify(n))}let n=Y()||{userId:P(),createdAt:g(),onboarding:{},checkins:[],pages:[],opens:[]};(function(){let e=g();n.opens.some(o=>o.date===e)||(n.opens.push({date:e,hour:new Date().getHours()}),n.opens=n.opens.slice(-60)),k()})();let B=t=>n.pages.find(e=>e.date===t),q=t=>n.checkins.find(e=>e.date===t),D=t=>window.CONTENT.find(e=>e.id===t.contentId)||t,_=()=>window.ONBOARDING.every(t=>n.onboarding[t.id]);function C(t){return n.pages.filter(e=>e.date<t).sort((e,o)=>e.date<o.date?1:-1)[0]}function N(){let t=g();if(!_())return F();let e=B(t);if(e)return L(e,!1);let o=C(t);return o&&o.done===void 0?M(o):q(t)?z():Q()}function I(t){return'<div class="options">'+t.map(e=>`<button class="opt" data-tag="${e.tag}" data-label="${e.label}"><span class="emoji">${e.emoji||""}</span>${e.label}</button>`).join("")+"</div>"}function S(t){b.innerHTML=`<button class="language-switch" id="language-switch" type="button">${a.language}</button>${t}`,document.getElementById("language-switch").addEventListener("click",()=>{let e=window.FATEBOOK_LANGUAGE==="zh"?"en":"zh";localStorage.setItem("fatebook_language",e);let o=new URL(location.href);o.searchParams.delete("lang"),o.searchParams.delete("reset"),location.assign(o.href)})}function A(t){b.querySelectorAll(".opt").forEach(e=>e.addEventListener("click",()=>t(e.dataset.tag,e.dataset.label)))}function F(){let t=window.ONBOARDING,e=t.find(i=>!n.onboarding[i.id]),o=t.indexOf(e);S(`<section class="screen fade-in">
+      ${o===0?`<p class="intro">${a.onboardingIntro}</p>`:""}
+      <p class="step">${o+1} / ${t.length}</p>
+      <h2 class="question">${e.text}</h2>
+      ${I(e.options)}
+    </section>`),A(i=>{n.onboarding[e.id]=i,k(),N()})}function M(t){S(`<section class="screen fade-in">
+      <p class="intro">${a.lastPage}</p>
+      <blockquote class="quote">${D(t).action}</blockquote>
+      <h2 class="question">${a.reviewQuestion}</h2>
+      ${I([{emoji:"\u2705",label:a.reviewOptions[0],tag:"done"},{emoji:"\u23F3",label:a.reviewOptions[1],tag:"not"},{emoji:"\u{1F4AD}",label:a.reviewOptions[2],tag:"forgot"}])}
+    </section>`),A(e=>{t.done=e,k(),N()})}function U(t){let e=window.DAILY_QUESTIONS,o=e.filter(m=>m.category==="state"),i=e.filter(m=>m.category!=="state"),s=Math.floor(d(t).getTime()/864e5);return s%2===0||!i.length?o[Math.floor(s/2)%o.length]:i[Math.floor(s/2)%i.length]}function Q(){let t=g(),e=U(t);S(`<section class="screen fade-in">
+      <p class="intro">${a.beforeQuestion}</p>
+      <h2 class="question">${e.text}</h2>
+      ${I(e.options)}
+    </section>`),A((o,i)=>{n.checkins.push({date:t,qid:e.id,cat:e.category,tag:o,label:i}),n.checkins=n.checkins.slice(-180),k(),N()})}function z(){S(`<section class="screen fade-in">
       <div class="book" id="book">
-        <div class="inner"><span>✦</span></div>
-        <div class="cover"><div class="cover-title">${T.bookTitle}</div><div class="cover-sub">FATEBOOK</div></div>
+        <div class="inner"><span>\u2726</span></div>
+        <div class="cover"><div class="cover-title">${a.bookTitle}</div><div class="cover-sub">FATEBOOK</div></div>
       </div>
-      <button class="primary" id="open">${T.openBook}</button>
-      <p class="hint">${T.oncePerDay}</p>
-    </section>`);
-    document.getElementById("open").addEventListener("click", e => {
-      e.target.disabled = true;
-      document.getElementById("book").classList.add("opening");
-      const p = generatePage();
-      state.pages.push(p);
-      state.pages = state.pages.slice(-180);
-      save();
-      setTimeout(() => {
-        renderPage(p, true);
-      }, 1400);
-    });
-  }
-
-  /* ---------- 生成今天这一页（纯规则，无 AI） ---------- */
-  function tagScores() { // 根据"说中了/不像我"反馈，累计各标签偏好
-    const s = {};
-    state.pages.forEach(p => {
-      if (!p.feedback) return;
-      const c = window.CONTENT.find(x => x.id === p.contentId);
-      if (!c) return;
-      const delta = p.feedback === "hit" ? 1 : p.feedback === "miss" ? -1 : 0;
-      c.tags.forEach(tag => { s[tag] = (s[tag] || 0) + delta; });
-    });
-    return s;
-  }
-
-  function generatePage() {
-    const t = todayKey();
-    const r = rng(hash(state.userId + t));
-    const today = getCheckin(t);
-    const focus = state.onboarding.focus;
-    const pref = tagScores();
-    const recent = new Set(state.pages.filter(p => {
-      const age = daysBetween(p.date, t);
-      return age >= 0 && age <= 30;
-    }).map(p => p.contentId));
-
-    let pool = window.CONTENT.filter(c => !recent.has(c.id));
-    if (!pool.length) pool = window.CONTENT.slice();
-
-    const scored = pool.map(c => {
-      let s = 1;
-      if (today && c.tags.includes(today.tag)) s += 3;
-      if (focus && c.tags.includes(focus)) s += 2;
-      c.tags.forEach(tag => { if (pref[tag]) s += Math.max(-1, Math.min(3, pref[tag])) * 0.5; });
-      return { c, s: Math.max(0.2, s) };
-    });
-    const total = scored.reduce((a, x) => a + x.s, 0);
-    let pick = r() * total, chosen = scored[0].c;
-    for (const x of scored) { pick -= x.s; if (pick <= 0) { chosen = x.c; break; } }
-
-    return {
-      date: t,
-      pageNo: 100 + Math.floor(r() * 900),
-      contentId: chosen.id,
-      recall: buildRecall(t),
-      message: chosen.message,
-      action: chosen.action
-    };
-  }
-
-  function calcStreak(t) { // 截至 t 前一天，连续翻书天数
-    let n = 0, d = shiftDay(t, -1);
-    while (getPage(d)) { n++; d = shiftDay(d, -1); }
-    return n;
-  }
-
-  // "书记得你"：全部基于真实点选数据，不编造
-  function buildRecall(t) {
-    const lines = [];
-    const prev = lastPageBefore(t);
-    if (prev && prev.done === "done") lines.push(T.recallDone);
-    else if (prev && prev.done === "not") lines.push(T.recallNotDone);
-
-    const week = state.checkins.filter(c => c.cat === "state" && daysBetween(c.date, t) < 7 && daysBetween(c.date, t) >= 0);
-    if (week.length >= 3) {
-      const count = {};
-      week.forEach(c => { count[c.tag] = (count[c.tag] || 0) + 1; });
-      const [tag, n] = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
-      const latestAnswer = week.filter(c => c.tag === tag).sort((a, b) => b.date.localeCompare(a.date))[0];
-      const question = window.DAILY_QUESTIONS.find(q => q.id === latestAnswer.qid);
-      const label = question?.options.find(option => option.tag === tag)?.label || T.stateLabels[tag];
-      if (n >= 2) lines.push(T.recallWeek.replace("{count}", n).replace("{label}", label));
-    }
-
-    const streak = calcStreak(t) + 1;
-    if (lines.length < 2 && streak >= 3) lines.push(T.recallStreak.replace("{count}", streak));
-
-    const hour = new Date().getHours();
-    const nights = state.opens.filter(o => o.hour >= 22 || o.hour < 4).length;
-    if (lines.length < 2 && nights >= 3 && (hour >= 22 || hour < 4)) lines.push(T.recallNight);
-
-    if (!lines.length) lines.push(state.pages.filter(page => page.date < t).length === 0 ? T.recallFirst : T.recallReturn);
-    return lines.slice(0, 2).join("");
-  }
-
-  /* ---------- 页面：今日命运页 ---------- */
-  function renderPage(p, animate) {
-    const content = getContent(p);
-    const fb = [
-      { k: "hit", t: T.feedbackOptions[0] },
-      { k: "meh", t: T.feedbackOptions[1] },
-      { k: "miss", t: T.feedbackOptions[2] }
-    ];
-    renderScreen(`<section class="screen">
-      <article class="page-card ${animate ? "reveal" : "fade-in"}" id="card">
-        <div class="page-no">${T.page.replace("{page}", p.pageNo)}</div>
-        <p class="recall">${buildRecall(p.date)}</p>
-        <div class="divider">✦</div>
-        <p class="message">${content.message}</p>
-        <div class="action"><span>${T.action}</span><p>${content.action}</p></div>
-        <div class="date">${p.date} · FateBook</div>
+      <button class="primary" id="open">${a.openBook}</button>
+      <p class="hint">${a.oncePerDay}</p>
+    </section>`),document.getElementById("open").addEventListener("click",t=>{t.target.disabled=!0,document.getElementById("book").classList.add("opening");let e=H();n.pages.push(e),n.pages=n.pages.slice(-180),k(),setTimeout(()=>{L(e,!0)},1400)})}function K(){let t={};return n.pages.forEach(e=>{if(!e.feedback)return;let o=window.CONTENT.find(s=>s.id===e.contentId);if(!o)return;let i=e.feedback==="hit"?1:e.feedback==="miss"?-1:0;o.tags.forEach(s=>{t[s]=(t[s]||0)+i})}),t}function H(){let t=g(),e=W(G(n.userId+t)),o=q(t),i=n.onboarding.focus,s=K(),m=new Set(n.pages.filter(l=>{let y=T(l.date,t);return y>=0&&y<=30}).map(l=>l.contentId)),w=window.CONTENT.filter(l=>!m.has(l.id));w.length||(w=window.CONTENT.slice());let r=w.map(l=>{let y=1;return o&&l.tags.includes(o.tag)&&(y+=3),i&&l.tags.includes(i)&&(y+=2),l.tags.forEach(c=>{s[c]&&(y+=Math.max(-1,Math.min(3,s[c]))*.5)}),{c:l,s:Math.max(.2,y)}}),E=r.reduce((l,y)=>l+y.s,0),j=e()*E,v=r[0].c;for(let l of r)if(j-=l.s,j<=0){v=l.c;break}return{date:t,pageNo:100+Math.floor(e()*900),contentId:v.id,recall:x(t),message:v.message,action:v.action}}function V(t){let e=0,o=O(t,-1);for(;B(o);)e++,o=O(o,-1);return e}function x(t){let e=[],o=C(t);o&&o.done==="done"?e.push(a.recallDone):o&&o.done==="not"&&e.push(a.recallNotDone);let i=n.checkins.filter(r=>r.cat==="state"&&T(r.date,t)<7&&T(r.date,t)>=0);if(i.length>=3){let r={};i.forEach(c=>{r[c.tag]=(r[c.tag]||0)+1});let[E,j]=Object.entries(r).sort((c,$)=>$[1]-c[1])[0],v=i.filter(c=>c.tag===E).sort((c,$)=>$.date.localeCompare(c.date))[0],y=window.DAILY_QUESTIONS.find(c=>c.id===v.qid)?.options.find(c=>c.tag===E)?.label||a.stateLabels[E];j>=2&&e.push(a.recallWeek.replace("{count}",j).replace("{label}",y))}let s=V(t)+1;e.length<2&&s>=3&&e.push(a.recallStreak.replace("{count}",s));let m=new Date().getHours(),w=n.opens.filter(r=>r.hour>=22||r.hour<4).length;return e.length<2&&w>=3&&(m>=22||m<4)&&e.push(a.recallNight),e.length||e.push(n.pages.filter(r=>r.date<t).length===0?a.recallFirst:a.recallReturn),e.slice(0,2).join("")}function L(t,e){let o=D(t),i=[{k:"hit",t:a.feedbackOptions[0]},{k:"meh",t:a.feedbackOptions[1]},{k:"miss",t:a.feedbackOptions[2]}];S(`<section class="screen">
+      <article class="page-card ${e?"reveal":"fade-in"}" id="card">
+        <div class="page-no">${a.page.replace("{page}",t.pageNo)}</div>
+        <p class="recall">${x(t.date)}</p>
+        <div class="divider">\u2726</div>
+        <p class="message">${o.message}</p>
+        <div class="action"><span>${a.action}</span><p>${o.action}</p></div>
+        <div class="date">${t.date} \xB7 FateBook</div>
       </article>
       <div class="feedback">
-        <p>${p.feedback ? T.feedbackSaved : T.feedbackQuestion}</p>
-        <div class="fb-row">${fb.map(f => `<button class="fb ${p.feedback === f.k ? "selected" : ""}" data-k="${f.k}">${f.t}</button>`).join("")}</div>
+        <p>${t.feedback?a.feedbackSaved:a.feedbackQuestion}</p>
+        <div class="fb-row">${i.map(s=>`<button class="fb ${t.feedback===s.k?"selected":""}" data-k="${s.k}">${s.t}</button>`).join("")}</div>
       </div>
-      <button class="secondary" id="share">${T.share}</button>
-      <p class="hint">${T.tomorrow}</p>
-    </section>`);
-    $app.querySelectorAll(".fb").forEach(b => b.addEventListener("click", () => {
-      p.feedback = b.dataset.k; save(); renderPage(p, false);
-    }));
-    document.getElementById("share").addEventListener("click", sharePage);
-  }
-
-  async function sharePage() {
-    const button = document.getElementById("share");
-    button.disabled = true;
-    try {
-      if (!window.html2canvas) throw new Error("图片组件尚未加载");
-      const canvas = await window.html2canvas(document.getElementById("card"), { scale: 2, backgroundColor: null });
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
-      if (!blob) throw new Error("浏览器无法生成图片");
-
-      const name = `fatebook-${todayKey()}.png`;
-      if (typeof File !== "undefined" && navigator.canShare && navigator.share) {
-        const file = new File([blob], name, { type: "image/png" });
-        if (navigator.canShare({ files: [file] })) {
-          try { await navigator.share({ files: [file], title: T.shareTitle }); return; }
-          catch (e) { if (e.name === "AbortError") return; }
-        }
-      }
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) {
-      console.error("命运书分享图片生成失败：", e);
-      alert(T.shareError);
-    } finally {
-      button.disabled = false;
-    }
-  }
-
-  route();
-})();
+      <button class="secondary" id="share">${a.share}</button>
+      <p class="hint">${a.tomorrow}</p>
+    </section>`),b.querySelectorAll(".fb").forEach(s=>s.addEventListener("click",()=>{t.feedback=s.dataset.k,k(),L(t,!1)})),document.getElementById("share").addEventListener("click",J)}async function J(){let t=document.getElementById("share");t.disabled=!0;try{if(!window.html2canvas)throw new Error("\u56FE\u7247\u7EC4\u4EF6\u5C1A\u672A\u52A0\u8F7D");let e=await window.html2canvas(document.getElementById("card"),{scale:2,backgroundColor:null}),o=await new Promise(w=>e.toBlob(w,"image/png"));if(!o)throw new Error("\u6D4F\u89C8\u5668\u65E0\u6CD5\u751F\u6210\u56FE\u7247");let i=`fatebook-${g()}.png`;if(typeof File<"u"&&navigator.canShare&&navigator.share){let w=new File([o],i,{type:"image/png"});if(navigator.canShare({files:[w]}))try{await navigator.share({files:[w],title:a.shareTitle});return}catch(r){if(r.name==="AbortError")return}}let s=URL.createObjectURL(o),m=document.createElement("a");m.href=s,m.download=i,m.click(),setTimeout(()=>URL.revokeObjectURL(s),1e3)}catch(e){console.error("\u547D\u8FD0\u4E66\u5206\u4EAB\u56FE\u7247\u751F\u6210\u5931\u8D25\uFF1A",e),alert(a.shareError)}finally{t.disabled=!1}}N()})();})();
