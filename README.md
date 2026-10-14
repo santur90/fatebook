@@ -10,5 +10,3 @@ Choose a few answers, turn today’s page, and take a small thought with you. No
 - Save and share your page
 - Available in English and Chinese
 - Optional PayPal support and a visitor map
-
-The visitor map is provided by MapMyVisitors and shares its visitor count with the Unit Converter website.
