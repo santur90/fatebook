@@ -4,6 +4,7 @@
   const STORE_KEY = "fatebook_v1";
   const $app = document.getElementById("app");
   const params = new URLSearchParams(location.search);
+  const T = window.I18N[window.FATEBOOK_LANGUAGE];
 
   // 调试：?reset 清空数据；?date=2026-10-20 模拟某一天
   if (params.has("reset")) localStorage.removeItem(STORE_KEY);
@@ -56,6 +57,7 @@
 
   const getPage = date => state.pages.find(p => p.date === date);
   const getCheckin = date => state.checkins.find(c => c.date === date);
+  const getContent = page => window.CONTENT.find(c => c.id === page.contentId) || page;
   const onboardingDone = () => window.ONBOARDING.every(q => state.onboarding[q.id]);
   function lastPageBefore(t) {
     return state.pages.filter(p => p.date < t).sort((a, b) => (a.date < b.date ? 1 : -1))[0];
@@ -78,6 +80,17 @@
       `<button class="opt" data-tag="${o.tag}" data-label="${o.label}"><span class="emoji">${o.emoji || ""}</span>${o.label}</button>`
     ).join("") + "</div>";
   }
+  function renderScreen(content) {
+    $app.innerHTML = `<button class="language-switch" id="language-switch" type="button">${T.language}</button>${content}`;
+    document.getElementById("language-switch").addEventListener("click", () => {
+      const language = window.FATEBOOK_LANGUAGE === "zh" ? "en" : "zh";
+      localStorage.setItem("fatebook_language", language);
+      const nextUrl = new URL(location.href);
+      nextUrl.searchParams.delete("lang");
+      nextUrl.searchParams.delete("reset");
+      location.assign(nextUrl.href);
+    });
+  }
   function bindOptions(cb) {
     $app.querySelectorAll(".opt").forEach(b => b.addEventListener("click", () => cb(b.dataset.tag, b.dataset.label)));
   }
@@ -87,27 +100,27 @@
     const list = window.ONBOARDING;
     const q = list.find(x => !state.onboarding[x.id]);
     const idx = list.indexOf(q);
-    $app.innerHTML = `<section class="screen fade-in">
-      ${idx === 0 ? '<p class="intro">这是一本会记住你的书。<br>先让它认识你。</p>' : ""}
+    renderScreen(`<section class="screen fade-in">
+      ${idx === 0 ? `<p class="intro">${T.onboardingIntro}</p>` : ""}
       <p class="step">${idx + 1} / ${list.length}</p>
       <h2 class="question">${q.text}</h2>
       ${optionsHTML(q.options)}
-    </section>`;
+    </section>`);
     bindOptions(tag => { state.onboarding[q.id] = tag; save(); route(); });
   }
 
   /* ---------- 页面：回顾上一页 ---------- */
   function renderReview(prev) {
-    $app.innerHTML = `<section class="screen fade-in">
-      <p class="intro">上一次，书页对你说：</p>
-      <blockquote class="quote">${prev.action}</blockquote>
-      <h2 class="question">你做了吗？</h2>
+    renderScreen(`<section class="screen fade-in">
+      <p class="intro">${T.lastPage}</p>
+      <blockquote class="quote">${getContent(prev).action}</blockquote>
+      <h2 class="question">${T.reviewQuestion}</h2>
       ${optionsHTML([
-        { emoji: "✅", label: "做了", tag: "done" },
-        { emoji: "⏳", label: "没做", tag: "not" },
-        { emoji: "💭", label: "忘了", tag: "forgot" }
+        { emoji: "✅", label: T.reviewOptions[0], tag: "done" },
+        { emoji: "⏳", label: T.reviewOptions[1], tag: "not" },
+        { emoji: "💭", label: T.reviewOptions[2], tag: "forgot" }
       ])}
-    </section>`;
+    </section>`);
     bindOptions(tag => { prev.done = tag; save(); route(); });
   }
 
@@ -125,11 +138,11 @@
   function renderQuestion() {
     const t = todayKey();
     const q = dailyQuestion(t);
-    $app.innerHTML = `<section class="screen fade-in">
-      <p class="intro">翻开之前，书想先问你一句。</p>
+    renderScreen(`<section class="screen fade-in">
+      <p class="intro">${T.beforeQuestion}</p>
       <h2 class="question">${q.text}</h2>
       ${optionsHTML(q.options)}
-    </section>`;
+    </section>`);
     bindOptions((tag, label) => {
       state.checkins.push({ date: t, qid: q.id, cat: q.category, tag, label });
       state.checkins = state.checkins.slice(-180);
@@ -139,14 +152,14 @@
 
   /* ---------- 页面：合上的书 ---------- */
   function renderClosedBook() {
-    $app.innerHTML = `<section class="screen fade-in">
+    renderScreen(`<section class="screen fade-in">
       <div class="book" id="book">
         <div class="inner"><span>✦</span></div>
-        <div class="cover"><div class="cover-title">命运书</div><div class="cover-sub">FATEBOOK</div></div>
+        <div class="cover"><div class="cover-title">${T.bookTitle}</div><div class="cover-sub">FATEBOOK</div></div>
       </div>
-      <button class="primary" id="open">翻开今天</button>
-      <p class="hint">每天只能翻开一次</p>
-    </section>`;
+      <button class="primary" id="open">${T.openBook}</button>
+      <p class="hint">${T.oncePerDay}</p>
+    </section>`);
     document.getElementById("open").addEventListener("click", e => {
       e.target.disabled = true;
       document.getElementById("book").classList.add("opening");
@@ -218,51 +231,55 @@
   function buildRecall(t) {
     const lines = [];
     const prev = lastPageBefore(t);
-    if (prev && prev.done === "done") lines.push("上一页的小事，你说做到了。我记下了。");
-    else if (prev && prev.done === "not") lines.push("上一页的事没做也没关系，书页不催人。");
+    if (prev && prev.done === "done") lines.push(T.recallDone);
+    else if (prev && prev.done === "not") lines.push(T.recallNotDone);
 
     const week = state.checkins.filter(c => c.cat === "state" && daysBetween(c.date, t) < 7 && daysBetween(c.date, t) >= 0);
     if (week.length >= 3) {
       const count = {};
-      week.forEach(c => { count[c.label] = (count[c.label] || 0) + 1; });
-      const [label, n] = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
-      if (n >= 2) lines.push(`这一周，你有 ${n} 次说自己「${label}」。`);
+      week.forEach(c => { count[c.tag] = (count[c.tag] || 0) + 1; });
+      const [tag, n] = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+      const latestAnswer = week.filter(c => c.tag === tag).sort((a, b) => b.date.localeCompare(a.date))[0];
+      const question = window.DAILY_QUESTIONS.find(q => q.id === latestAnswer.qid);
+      const label = question?.options.find(option => option.tag === tag)?.label || T.stateLabels[tag];
+      if (n >= 2) lines.push(T.recallWeek.replace("{count}", n).replace("{label}", label));
     }
 
     const streak = calcStreak(t) + 1;
-    if (lines.length < 2 && streak >= 3) lines.push(`这是你连续第 ${streak} 天翻开我。`);
+    if (lines.length < 2 && streak >= 3) lines.push(T.recallStreak.replace("{count}", streak));
 
     const hour = new Date().getHours();
     const nights = state.opens.filter(o => o.hour >= 22 || o.hour < 4).length;
-    if (lines.length < 2 && nights >= 3 && (hour >= 22 || hour < 4)) lines.push("你总在深夜翻开我。今天这页，留给睡前的你。");
+    if (lines.length < 2 && nights >= 3 && (hour >= 22 || hour < 4)) lines.push(T.recallNight);
 
-    if (!lines.length) lines.push(state.pages.length === 0 ? "我们才刚认识。往后的每一页，我都会记得。" : "书页记得你来过。");
+    if (!lines.length) lines.push(state.pages.filter(page => page.date < t).length === 0 ? T.recallFirst : T.recallReturn);
     return lines.slice(0, 2).join("");
   }
 
   /* ---------- 页面：今日命运页 ---------- */
   function renderPage(p, animate) {
+    const content = getContent(p);
     const fb = [
-      { k: "hit", t: "✨ 说中了" },
-      { k: "meh", t: "🤔 一般" },
-      { k: "miss", t: "❌ 不像我" }
+      { k: "hit", t: T.feedbackOptions[0] },
+      { k: "meh", t: T.feedbackOptions[1] },
+      { k: "miss", t: T.feedbackOptions[2] }
     ];
-    $app.innerHTML = `<section class="screen">
+    renderScreen(`<section class="screen">
       <article class="page-card ${animate ? "reveal" : "fade-in"}" id="card">
-        <div class="page-no">第 ${p.pageNo} 页</div>
-        <p class="recall">${p.recall}</p>
+        <div class="page-no">${T.page.replace("{page}", p.pageNo)}</div>
+        <p class="recall">${buildRecall(p.date)}</p>
         <div class="divider">✦</div>
-        <p class="message">${p.message}</p>
-        <div class="action"><span>今日小事</span><p>${p.action}</p></div>
+        <p class="message">${content.message}</p>
+        <div class="action"><span>${T.action}</span><p>${content.action}</p></div>
         <div class="date">${p.date} · FateBook</div>
       </article>
       <div class="feedback">
-        <p>${p.feedback ? "书已记下你的回答" : "这一页说中你了吗？"}</p>
+        <p>${p.feedback ? T.feedbackSaved : T.feedbackQuestion}</p>
         <div class="fb-row">${fb.map(f => `<button class="fb ${p.feedback === f.k ? "selected" : ""}" data-k="${f.k}">${f.t}</button>`).join("")}</div>
       </div>
-      <button class="secondary" id="share">保存这一页</button>
-      <p class="hint">明天再来，书会翻到新的一页</p>
-    </section>`;
+      <button class="secondary" id="share">${T.share}</button>
+      <p class="hint">${T.tomorrow}</p>
+    </section>`);
     $app.querySelectorAll(".fb").forEach(b => b.addEventListener("click", () => {
       p.feedback = b.dataset.k; save(); renderPage(p, false);
     }));
@@ -282,7 +299,7 @@
       if (typeof File !== "undefined" && navigator.canShare && navigator.share) {
         const file = new File([blob], name, { type: "image/png" });
         if (navigator.canShare({ files: [file] })) {
-          try { await navigator.share({ files: [file], title: "我的命运书" }); return; }
+          try { await navigator.share({ files: [file], title: T.shareTitle }); return; }
           catch (e) { if (e.name === "AbortError") return; }
         }
       }
@@ -295,7 +312,7 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       console.error("命运书分享图片生成失败：", e);
-      alert("图片生成失败，请检查网络后重试。");
+      alert(T.shareError);
     } finally {
       button.disabled = false;
     }

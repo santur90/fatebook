@@ -9,12 +9,19 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
-  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
   background: radial-gradient(ellipse at top, #2c2019, var(--bg) 70%);
   color: var(--paper);
   display: flex; justify-content: center;
 }
-#app { width: 100%; max-width: 440px; min-height: 100vh; padding: 48px 24px; }
+#app { position: relative; width: 100%; max-width: 440px; min-height: 100vh; padding: 56px 24px 48px; }
+.language-switch {
+  position: absolute; top: 12px; right: 16px; z-index: 2;
+  font: inherit; font-size: 13px; color: var(--gold); cursor: pointer;
+  background: rgba(244, 233, 212, 0.06); border: 1px solid rgba(232, 201, 138, 0.3);
+  border-radius: 999px; padding: 6px 12px;
+}
+.language-switch:hover, .language-switch:active { background: rgba(232, 201, 138, 0.18); border-color: var(--gold); }
 .screen { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 20px; }
 
 .intro { color: var(--muted); line-height: 1.8; }

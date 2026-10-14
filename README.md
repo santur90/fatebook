@@ -10,8 +10,11 @@ fatebook/
 ├── .nojekyll           # 让 GitHub Pages 原样发布
 ├── css/style.css       # 样式 + 翻书动画
 ├── js/app.js           # 全部逻辑（路由、记忆、抽页、回忆、分享）
+├── data/i18n.js        # 浏览器语言检测 + 界面文案
 ├── data/questions.js   # 首次问题 + 每日问题
+├── data/questions.en.js # 英文问题
 ├── data/content.js     # 内容库（箴言 + 今日小事，带标签）
+├── data/content.en.js  # 英文内容库
 └── assets/favicon.svg
 ```
 
@@ -20,6 +23,12 @@ fatebook/
 首次：回答 2 题 → 回顾上一页的小事是否完成 → 每日一问 → 翻开今天 → 反馈「说中了吗」→ 保存分享图
 
 所有数据存在浏览器 localStorage（键 `fatebook_v1`），不登录、无后端。
+
+## 多语言
+
+界面会跟随浏览器首选语言自动显示中文或英文；其他语言默认显示英文。页面右上角可以随时切换语言，选择会保存在本机浏览器。通过 `?lang=zh` 或 `?lang=en` 可临时预览指定语言。
+
+问题和两种语言的内容库使用相同的标签与内容 ID，因此切换语言不会影响已保存的回答、抽页和历史反馈。
 
 ## 本地运行
 
